@@ -1,127 +1,208 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { Pool } from "pg"
+import { createServerClient, type CookieOptions } from "@supabase/ssr"
 
-const pool = new Pool({
-  host: process.env.PG_HOST,
-  port: Number(process.env.PG_PORT || 5432),
-  user: process.env.PG_USER,
-  password: process.env.PG_PASSWORD,
-  database: process.env.PG_DATABASE,
-  ssl: {
-    rejectUnauthorized: false
-  }
-})
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabasePublishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+
+if (!supabaseUrl || !supabasePublishableKey) {
+  throw new Error("Missing Supabase environment variables")
+}
+
+function createSupabaseRouteClient(request: NextRequest) {
+  const response = NextResponse.next()
+
+  const supabase = createServerClient(supabaseUrl!, supabasePublishableKey!, {
+    cookies: {
+      getAll() {
+        return request.cookies.getAll()
+      },
+      setAll(cookiesToSet) {
+        cookiesToSet.forEach(({ name, value, options }) => {
+          response.cookies.set(name, value, options as CookieOptions)
+        })
+      },
+    },
+  })
+
+  return { supabase, response }
+}
 
 // POST handler — Create new order and order items
 export async function POST(request: NextRequest) {
+  const { supabase, response } = createSupabaseRouteClient(request)
+
   try {
-    const orderData = await request.json();
-    const client = await pool.connect();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser()
 
-    try {
-      await client.query('BEGIN');
-
-      const orderInsertQuery = `
-        INSERT INTO "tblOrders" (
-          total, created_at, status,
-          first_name, last_name, email,
-          address, city, zip_code
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING id, total, created_at, status,
-                  first_name, last_name, email,
-                  address, city, zip_code;
-      `;
-
-      const created_at = new Date().toISOString();
-      const orderValues = [
-        orderData.total,
-        created_at,
-        "confirmed",
-        orderData.customerInfo.firstName,
-        orderData.customerInfo.lastName,
-        orderData.customerInfo.email,
-        orderData.customerInfo.address,
-        orderData.customerInfo.city,
-        orderData.customerInfo.zipCode,
-      ];
-
-      const orderResult = await client.query(orderInsertQuery, orderValues);
-      const orderRow = orderResult.rows[0];
-
-      const itemsInsertQuery = `
-        INSERT INTO "tblOrderItems" (
-          order_id, product_id, title, price, quantity, image
-        ) VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *;
-      `;
-
-      for (const item of orderData.items) {
-        await client.query(itemsInsertQuery, [
-          orderRow.id,
-          item.id,
-          item.title,
-          item.price,
-          item.quantity,
-          item.image,
-        ]);
-      }
-
-      await client.query('COMMIT');
-      return NextResponse.json(orderRow);
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
+    if (userError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
+
+    const orderData = await request.json()
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("orders")
+      .insert({
+        total: orderData.total,
+        created_at: new Date().toISOString(),
+        status: "confirmed",
+        first_name: orderData.customerInfo.firstName,
+        last_name: orderData.customerInfo.lastName,
+        email: orderData.customerInfo.email,
+        address: orderData.customerInfo.address,
+        city: orderData.customerInfo.city,
+        zip_code: orderData.customerInfo.zipCode,
+      })
+      .select(
+        `
+        id,
+        total,
+        created_at,
+        status,
+        first_name,
+        last_name,
+        email,
+        address,
+        city,
+        zip_code
+      `
+      )
+      .single()
+
+    if (orderError) {
+      console.error("Failed to create order:", orderError)
+
+      return NextResponse.json(
+        { error: "Failed to create order" },
+        { status: 500 }
+      )
+    }
+
+    const orderItems = orderData.items.map((item: any) => ({
+      order_id: orderRow.id,
+      product_id: item.id,
+      title: item.title,
+      price: item.price,
+      quantity: item.quantity,
+      image: item.image,
+    }))
+
+    const { error: itemsError } = await supabase
+      .from("order_items")
+      .insert(orderItems)
+
+    if (itemsError) {
+      console.error("Failed to create order items:", itemsError)
+
+      return NextResponse.json(
+        { error: "Failed to create order items" },
+        { status: 500 }
+      )
+    }
+
+    const jsonResponse = NextResponse.json(orderRow)
+
+    response.cookies.getAll().forEach((cookie) => {
+      jsonResponse.cookies.set(cookie)
+    })
+
+    return jsonResponse
   } catch (error) {
-    return NextResponse.json({ error: "Failed to create order" }, { status: 500 });
+    console.error(error)
+
+    return NextResponse.json(
+      { error: "Failed to create order" },
+      { status: 500 }
+    )
   }
 }
 
 // GET handler — Fetch orders with items
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const { supabase, response } = createSupabaseRouteClient(request)
+
   try {
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser()
 
-    const client = await pool.connect();
-
-    try {
-      const ordersQuery = `
-        SELECT o.*, json_agg(oi) AS items
-        FROM "tblOrders" o
-        LEFT JOIN "tblOrderItems" oi ON oi.order_id = o.id
-        GROUP BY o.id
-        ORDER BY o.created_at DESC;
-      `;
-
-      const result = await client.query(ordersQuery);
-      const orders = result.rows.map((order: any) => ({
-        id: order.id,
-        total: order.total,
-        created_at: order.created_at,
-        status: order.status,
-        items: (order.items || []).map((item: any) => ({
-          id: item.product_id,
-          title: item.title,
-          price: item.price,
-          image: item.image,
-          quantity: item.quantity,
-        })),
-        customerInfo: {
-          firstName: order.first_name,
-          lastName: order.last_name,
-          email: order.email,
-          address: order.address,
-          city: order.city,
-          zipCode: order.zip_code,
-        },
-      }));
-
-      return NextResponse.json(orders);
-    } finally {
-      client.release();
+    if (userError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
+
+    const { data, error } = await supabase
+      .from("orders")
+      .select(
+        `
+        id,
+        total,
+        created_at,
+        status,
+        first_name,
+        last_name,
+        email,
+        address,
+        city,
+        zip_code,
+        order_items (
+          product_id,
+          title,
+          price,
+          image,
+          quantity
+        )
+      `
+      )
+      .order("created_at", { ascending: false })
+
+    if (error) {
+      console.error("Failed to fetch orders:", error)
+
+      return NextResponse.json(
+        { error: "Failed to fetch orders" },
+        { status: 500 }
+      )
+    }
+
+    const orders = data.map((order: any) => ({
+      id: order.id,
+      total: order.total,
+      created_at: order.created_at,
+      status: order.status,
+      items: (order.order_items || []).map((item: any) => ({
+        id: item.product_id,
+        title: item.title,
+        price: item.price,
+        image: item.image,
+        quantity: item.quantity,
+      })),
+      customerInfo: {
+        firstName: order.first_name,
+        lastName: order.last_name,
+        email: order.email,
+        address: order.address,
+        city: order.city,
+        zipCode: order.zip_code,
+      },
+    }))
+
+    const jsonResponse = NextResponse.json(orders)
+
+    response.cookies.getAll().forEach((cookie) => {
+      jsonResponse.cookies.set(cookie)
+    })
+
+    return jsonResponse
   } catch (error) {
-    return NextResponse.json({ error: "Failed to fetch orders" }, { status: 500 });
+    console.error(error)
+
+    return NextResponse.json(
+      { error: "Failed to fetch orders" },
+      { status: 500 }
+    )
   }
 }

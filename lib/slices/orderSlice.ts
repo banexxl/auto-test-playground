@@ -14,22 +14,30 @@ const initialState: OrderState = {
   loading: false,
   error: null,
 }
-
 export const createOrder = createAsyncThunk(
   "order/createOrder",
-  async (orderData: Omit<Order, "id" | "createdAt" | "status">) => {
-    const response = await fetch("/api/orders", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(orderData),
-    })
-    const data = await response.json()
-    return data
-  },
-)
+  async (orderData: Omit<Order, "id" | "createdAt" | "status">, { rejectWithValue }) => {
+    try {
+      const response = await fetch("/api/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(orderData),
+      })
 
+      const data = await response.json()
+
+      if (!response.ok) {
+        return rejectWithValue(data.error || "Failed to create order")
+      }
+
+      return data
+    } catch (error) {
+      return rejectWithValue("Failed to create order")
+    }
+  }
+)
 const orderSlice = createSlice({
   name: "order",
   initialState,
