@@ -11,6 +11,7 @@ export async function GET(request: NextRequest) {
     }
 
     const response = await fetch(url)
+    console.log("Fetched products from API:", response)
     const products = await response.json()
 
     return NextResponse.json(products)
