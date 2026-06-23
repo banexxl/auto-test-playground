@@ -31,6 +31,6 @@ export interface Order {
     city: string
     zipCode: string
   }
-  createdAt: string
+  created_at: string
   status: "pending" | "confirmed" | "shipped" | "delivered"
 }

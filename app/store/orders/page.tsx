@@ -41,7 +41,7 @@ export default function OrdersPage() {
           setOrders(
             fetchedOrders.sort(
               (a: Order, b: Order) =>
-                new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+                new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
             )
           )
         } else {
@@ -196,8 +196,8 @@ export default function OrdersPage() {
                               Order #{order.id}
                             </Typography>
                             <Typography variant="body2" color="text.secondary">
-                              Placed on {new Date(order.createdAt).toLocaleDateString()} at{" "}
-                              {new Date(order.createdAt).toLocaleTimeString()}
+                              Placed on {new Date(order.created_at).toLocaleDateString()} at{" "}
+                              {new Date(order.created_at).toLocaleTimeString()}
                             </Typography>
                           </Box>
                           <Chip
